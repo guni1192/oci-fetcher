@@ -25,12 +25,12 @@ impl Image {
         }
     }
 
-    pub fn build_from_tar(&self, path: &str, container_id: &str) -> io::Result<()> {
+    pub fn build_from_tar(&self, path: &str, dir_name: &str) -> io::Result<()> {
         let tar_gz = File::open(&path).expect("");
         let tar = GzDecoder::new(tar_gz);
         let mut ar = Archive::new(tar);
 
-        let image_path = container_id;
+        let image_path = dir_name;
 
         if !Path::new(&image_path).exists() {
             std::fs::create_dir_all(&image_path)?;
@@ -46,10 +46,10 @@ impl Image {
         Ok(())
     }
 
-    pub fn put_config_json(&self, manifests: String, container_id: &str) -> std::io::Result<()> {
+    pub fn put_config_json(&self, manifests: String, dir_name: &str) -> std::io::Result<()> {
         let manifests = manifests.as_bytes();
 
-        let config_path = format!("{}/cromwell", container_id);
+        let config_path = format!("{}/cromwell", dir_name);
         fs::create_dir_all(&config_path).expect("Cannot create CONTAINER_PATH/cromwell/");
 
         let mut file = File::create(config_path + "/manifests.json")?;
@@ -59,7 +59,7 @@ impl Image {
         Ok(())
     }
 
-    pub fn pull(&mut self, container_id: &str) -> Result<(), reqwest::Error> {
+    pub fn pull(&mut self, dir_name: &str) -> Result<(), reqwest::Error> {
         let auth_url = format!(
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
             self.name
@@ -90,25 +90,25 @@ impl Image {
         match &body["fsLayers"] {
             Value::Array(fs_layers) => {
                 for fs_layer in fs_layers {
-                    self.download(token, &fs_layer, container_id)
+                    self.download(token, &fs_layer, dir_name)
                         .expect("download failed");
                 }
             }
             _ => eprintln!("unexpected type fsLayers"),
         }
 
-        self.put_config_json(manifests, container_id)
+        self.put_config_json(manifests, dir_name)
             .expect("cannnot put jsno");
 
         Ok(())
     }
 
-    fn download(&self, token: &str, fs_layer: &Value, container_id: &str) -> std::io::Result<()> {
+    fn download(&self, token: &str, fs_layer: &Value, dir_name: &str) -> std::io::Result<()> {
         if let Value::String(blob_sum) = &fs_layer["blobSum"] {
             let out_filename = format!("/tmp/{}.tar.gz", blob_sum.replace("sha256:", ""));
 
             if Path::new(out_filename.as_str()).exists() {
-                self.build_from_tar(&out_filename, container_id)
+                self.build_from_tar(&out_filename, dir_name)
                     .expect("cannnot build from tar");
                 return Ok(());
             }
@@ -126,7 +126,7 @@ impl Image {
             let mut out = File::create(&out_filename)?;
 
             io::copy(&mut res, &mut out)?;
-            self.build_from_tar(&out_filename, container_id)
+            self.build_from_tar(&out_filename, dir_name)
                 .expect("cannnot build from tar");
         } else {
             return Err(Error::new(
