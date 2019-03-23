@@ -6,3 +6,9 @@ edition = "2018"
 
 [dependencies]
 clap = "2.32"
+serde = "1"
+serde_derive = "1"
+serde_json ="1"
+flate2 = "*"
+tar = "*"
+reqwest = "*"
