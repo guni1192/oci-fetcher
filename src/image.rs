@@ -1,15 +1,53 @@
-use std::fs::{self, File};
-use std::io::{self, Error, ErrorKind, Write};
+use std::fs::File;
+use std::io;
 use std::path::Path;
 
 use flate2::read::GzDecoder;
 use reqwest;
-use serde_json::{self, Value};
 use tar::Archive;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AuthInfo {
+    token: String,
+    access_token: String,
+    expires_in: u32,
+    issued_at: String,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Image {
     name: String,
+    tag: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct FsLayer {
+    blob_sum: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct History {
+    v1_compatibility: String,
+}
+
+// TODO
+// #[derive(Serialize, Deserialize, Debug)]
+// #[serde(rename_all = "camelCase")]
+// struct Signature {
+//     Header: String,
+// }
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Manifest {
+    architecture: String,
+    fs_layers: Vec<FsLayer>,
+    history: Vec<History>,
+    name: String,
+    schema_version: u32,
+    // signatures: Vec<Signature>,
     tag: String,
 }
 
@@ -46,31 +84,13 @@ impl Image {
         Ok(())
     }
 
-    pub fn put_config_json(&self, manifests: String, dir_name: &str) -> std::io::Result<()> {
-        let manifests = manifests.as_bytes();
-
-        let config_path = format!("{}/cromwell", dir_name);
-        fs::create_dir_all(&config_path).expect("Cannot create CONTAINER_PATH/cromwell/");
-
-        let mut file = File::create(config_path + "/manifests.json")?;
-        file.write_all(manifests)?;
-        // TODO: parse manifests.history.v1Compatibility
-
-        Ok(())
-    }
-
     pub fn pull(&mut self, dir_name: &str) -> Result<(), reqwest::Error> {
         let auth_url = format!(
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
             self.name
         );
         let res_json: String = reqwest::get(auth_url.as_str())?.text()?;
-        let body: Value = serde_json::from_str(res_json.as_str()).expect("parse json failed");
-
-        let token = match &body["token"] {
-            Value::String(t) => t,
-            _ => panic!("unexpected data: body[\"token\"]"),
-        };
+        let auth: AuthInfo = serde_json::from_str(res_json.as_str()).expect("parse json failed");
 
         let manifests_url = format!(
             "https://registry.hub.docker.com/v2/{}/manifests/{}",
@@ -79,61 +99,44 @@ impl Image {
 
         let res = reqwest::Client::new()
             .get(manifests_url.as_str())
-            .bearer_auth(token)
+            .bearer_auth(&auth.token)
             .send()?
             .text()?;
 
-        let body: Value = serde_json::from_str(res.as_str()).expect("parse json failed");
+        let manifest: Manifest = serde_json::from_str(res.as_str()).expect("parse json failed");
 
-        let manifests = serde_json::to_string(&body).expect("Cannot convert Value to string");
-
-        match &body["fsLayers"] {
-            Value::Array(fs_layers) => {
-                for fs_layer in fs_layers {
-                    self.download(token, &fs_layer, dir_name)
-                        .expect("download failed");
-                }
-            }
-            _ => eprintln!("unexpected type fsLayers"),
+        for fs_layer in manifest.fs_layers {
+            self.download(&auth.token, &fs_layer, dir_name)
+                .expect("download failed");
         }
-
-        self.put_config_json(manifests, dir_name)
-            .expect("cannnot put jsno");
 
         Ok(())
     }
 
-    fn download(&self, token: &str, fs_layer: &Value, dir_name: &str) -> std::io::Result<()> {
-        if let Value::String(blob_sum) = &fs_layer["blobSum"] {
-            let out_filename = format!("/tmp/{}.tar.gz", blob_sum.replace("sha256:", ""));
+    fn download(&self, token: &str, fs_layer: &FsLayer, dir_name: &str) -> std::io::Result<()> {
+        let out_filename = format!("/tmp/{}.tar.gz", fs_layer.blob_sum.replace("sha256:", ""));
 
-            if Path::new(out_filename.as_str()).exists() {
-                self.build_from_tar(&out_filename, dir_name)
-                    .expect("cannnot build from tar");
-                return Ok(());
-            }
-
-            let url = format!(
-                "https://registry.hub.docker.com/v2/{}/blobs/{}",
-                self.name, blob_sum
-            );
-
-            let mut res = reqwest::Client::new()
-                .get(url.as_str())
-                .bearer_auth(token)
-                .send()
-                .expect("failed to send requwest");
-            let mut out = File::create(&out_filename)?;
-
-            io::copy(&mut res, &mut out)?;
+        if Path::new(out_filename.as_str()).exists() {
             self.build_from_tar(&out_filename, dir_name)
                 .expect("cannnot build from tar");
-        } else {
-            return Err(Error::new(
-                ErrorKind::Other,
-                "blobSum not found from fsLayer",
-            ));
+            return Ok(());
         }
+
+        let url = format!(
+            "https://registry.hub.docker.com/v2/{}/blobs/{}",
+            self.name, fs_layer.blob_sum
+        );
+
+        let mut res = reqwest::Client::new()
+            .get(url.as_str())
+            .bearer_auth(token)
+            .send()
+            .expect("failed to send requwest");
+        let mut out = File::create(&out_filename)?;
+
+        io::copy(&mut res, &mut out)?;
+        self.build_from_tar(&out_filename, dir_name)
+            .expect("cannnot build from tar");
         Ok(())
     }
 }

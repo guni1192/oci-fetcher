@@ -11,7 +11,7 @@ use self::image::Image;
 
 fn do_pull(sub_m: &ArgMatches) {
     let mut image = Image::new(sub_m.value_of("image_name").expect("specify image name"));
-    let path = sub_m.value_of("dir_name").unwrap_or("./hoge");
+    let path = sub_m.value_of("dir_name").expect("specify dir_name");
     image.pull(path).expect("failed fetch oci image");
 }
 
@@ -38,7 +38,7 @@ fn main() {
                 .arg(
                     Arg::with_name("dir_name")
                         .short("o")
-                        .value_name("NAME")
+                        .value_name("DIR_NAME")
                         .help("Specify put dir name")
                         .required(true)
                         .takes_value(true),
